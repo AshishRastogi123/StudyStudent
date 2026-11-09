@@ -152,3 +152,39 @@ test("students cannot review notes and rejected notes require valid reasons", as
   assert.equal(invalidReasonResponse.status, 400);
   assert.equal((await invalidReasonResponse.json()).message, "A valid rejection reason is required for rejected notes.");
 });
+
+test("admin can browse notes across users while students cannot use the admin listing", async () => {
+  const student = await User.create({ name: "Note Owner", email: "note-owner@example.com", password: "hash", role: "STUDENT", emailVerified: true });
+  const admin = await User.create({ name: "Notes Admin", email: "notes-admin@example.com", password: "hash", role: "ADMIN", emailVerified: true });
+  const course = await Course.create({ name: "Chemistry", slug: "chemistry", description: "Chemistry course" });
+  const subject = await Subject.create({ courseId: course._id, name: "Organic Chemistry", code: "CH101", semester: 1 });
+  const note = await Note.create({
+    userId: student._id,
+    uploaderId: student._id,
+    courseId: course._id,
+    subjectId: subject._id,
+    title: "Organic reactions",
+    description: "Reaction summary",
+    fileName: "reactions.pdf",
+    storagePath: "notes/private/reactions.pdf",
+    fileSize: 1024,
+    mimeType: "application/pdf",
+    checksum: "admin-all-notes-checksum",
+    status: "pending",
+  });
+
+  const adminResponse = await fetch(`${baseUrl}/api/notes/all?userId=${student._id}&status=pending`, {
+    headers: { Authorization: "Bearer " + makeToken(admin) },
+  });
+  assert.equal(adminResponse.status, 200);
+  const adminBody = await adminResponse.json();
+  assert.equal(adminBody.pagination.total, 1);
+  assert.equal(adminBody.notes[0]._id, String(note._id));
+  assert.equal(adminBody.notes[0].userId.email, student.email);
+  assert.equal(adminBody.notes[0].courseId.name, course.name);
+
+  const studentResponse = await fetch(`${baseUrl}/api/notes/all`, {
+    headers: { Authorization: "Bearer " + makeToken(student) },
+  });
+  assert.equal(studentResponse.status, 403);
+});

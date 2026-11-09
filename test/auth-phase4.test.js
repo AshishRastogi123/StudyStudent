@@ -96,6 +96,45 @@ test("register, verify email, update profile, and login successfully", async () 
   assert.equal(loginBody.user.email, "alice@example.com");
 });
 
+test("Google sign-in requires a configured client and a verified ID token", async () => {
+  const previousClientId = process.env.GOOGLE_CLIENT_ID;
+  delete process.env.GOOGLE_CLIENT_ID;
+
+  try {
+    const unconfiguredConfigResponse = await fetch(`${baseUrl}/api/auth/google/config`);
+    assert.deepEqual(await unconfiguredConfigResponse.json(), { clientId: "" });
+
+    const unconfiguredResponse = await fetch(`${baseUrl}/api/auth/google`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ credential: "invalid-token" }),
+    });
+    assert.equal(unconfiguredResponse.status, 503);
+
+    process.env.GOOGLE_CLIENT_ID = "test-google-client-id";
+    const configResponse = await fetch(`${baseUrl}/api/auth/google/config`);
+    assert.deepEqual(await configResponse.json(), { clientId: "test-google-client-id" });
+
+    const unverifiedClaimsResponse = await fetch(`${baseUrl}/api/auth/google`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Forged User", email: "forged@example.com" }),
+    });
+    assert.equal(unverifiedClaimsResponse.status, 400);
+
+    const invalidCredentialResponse = await fetch(`${baseUrl}/api/auth/google`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ credential: "not-a-google-id-token" }),
+    });
+    assert.equal(invalidCredentialResponse.status, 401);
+    assert.equal(await User.countDocuments({}), 0);
+  } finally {
+    if (previousClientId === undefined) delete process.env.GOOGLE_CLIENT_ID;
+    else process.env.GOOGLE_CLIENT_ID = previousClientId;
+  }
+});
+
 test("admin can update roles and students cannot change their own role", async () => {
   const adminUser = await User.create({ name: "Admin One", email: "admin@example.com", password: "hashed-pass", role: "ADMIN", emailVerified: true });
   const studentUser = await User.create({ name: "Student One", email: "student@example.com", password: "hashed-pass", role: "STUDENT", emailVerified: true });
@@ -116,6 +155,11 @@ test("admin can update roles and students cannot change their own role", async (
   const promoteBody = await promoteResponse.json();
   assert.equal(promoteBody.user.role, "MODERATOR");
 
+  const promotedAccessResponse = await fetch(`${baseUrl}/api/notes/queue`, {
+    headers: { Authorization: "Bearer " + studentToken },
+  });
+  assert.equal(promotedAccessResponse.status, 200);
+
   const selfChangeResponse = await fetch(`${baseUrl}/api/auth/users/${adminUser._id}/role`, {
     method: "PATCH",
     headers: {
@@ -127,6 +171,54 @@ test("admin can update roles and students cannot change their own role", async (
 
   assert.equal(selfChangeResponse.status, 403);
   assert.equal((await selfChangeResponse.json()).message, "You do not have permission to perform this action.");
+});
+
+test("admin can search users and account changes immediately update access", async () => {
+  const adminUser = await User.create({ name: "Primary Admin", email: "primary-admin@example.com", password: "hashed-pass", role: "ADMIN", emailVerified: true });
+  const studentUser = await User.create({ name: "Managed Student", email: "managed-student@example.com", password: "secret-hash", role: "STUDENT", emailVerified: true });
+  const adminToken = makeToken(adminUser);
+
+  const listResponse = await fetch(`${baseUrl}/api/auth/users?q=Managed&page=1&limit=1`, {
+    headers: { Authorization: "Bearer " + adminToken },
+  });
+  assert.equal(listResponse.status, 200);
+  const listBody = await listResponse.json();
+  assert.equal(listBody.pagination.total, 1);
+  assert.equal(listBody.users[0].email, studentUser.email);
+  assert.equal("password" in listBody.users[0], false);
+  assert.equal("emailVerificationToken" in listBody.users[0], false);
+
+  const studentToken = makeToken(studentUser);
+  const forbiddenListResponse = await fetch(`${baseUrl}/api/auth/users`, {
+    headers: { Authorization: "Bearer " + studentToken },
+  });
+  assert.equal(forbiddenListResponse.status, 403);
+
+  const demoteResponse = await fetch(`${baseUrl}/api/auth/users/${adminUser._id}/role`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", Authorization: "Bearer " + adminToken },
+    body: JSON.stringify({ role: "MODERATOR" }),
+  });
+  assert.equal(demoteResponse.status, 403);
+
+  const deactivateResponse = await fetch(`${baseUrl}/api/auth/users/${adminUser._id}/status`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", Authorization: "Bearer " + adminToken },
+    body: JSON.stringify({ isActive: false }),
+  });
+  assert.equal(deactivateResponse.status, 403);
+
+  const updateResponse = await fetch(`${baseUrl}/api/auth/users/${studentUser._id}/status`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", Authorization: "Bearer " + adminToken },
+    body: JSON.stringify({ isActive: false }),
+  });
+  assert.equal(updateResponse.status, 200);
+
+  const inactiveRequest = await fetch(`${baseUrl}/api/auth/me`, {
+    headers: { Authorization: "Bearer " + studentToken },
+  });
+  assert.equal(inactiveRequest.status, 401);
 });
 
 test("password reset flow works for valid users", async () => {

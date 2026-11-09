@@ -42,9 +42,10 @@ app.use(helmet({
     directives: {
       defaultSrc: ["'self'"],
       imgSrc: ["'self'", "data:", "https:"],
-      connectSrc: ["'self'"],
-      styleSrc: ["'self'", "'unsafe-inline'"],
-      scriptSrc: ["'self'"],
+      connectSrc: ["'self'", "https://accounts.google.com/gsi/"],
+      styleSrc: ["'self'", "'unsafe-inline'", "https://accounts.google.com/gsi/style"],
+      scriptSrc: ["'self'", "https://accounts.google.com/gsi/client"],
+      frameSrc: ["https://accounts.google.com/gsi/"],
       objectSrc: ["'none'"],
     },
   },

@@ -1,8 +1,10 @@
 const jwt = require("jsonwebtoken");
+const mongoose = require("mongoose");
+const User = require("../models/User");
 
 const normalizeRole = (role) => String(role || "").trim().toUpperCase();
 
-const requireAuth = (req, res, next) => {
+const requireAuth = async (req, res, next) => {
   const header = req.headers?.authorization || "";
   const token = header.startsWith("Bearer ") ? header.slice(7) : req.cookies?.token || null;
 
@@ -10,12 +12,28 @@ const requireAuth = (req, res, next) => {
     return res.status(401).json({ message: "Authentication required." });
   }
 
+  let decoded;
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || "dev-secret");
-    req.user = decoded;
-    return next();
+    decoded = jwt.verify(token, process.env.JWT_SECRET || "dev-secret");
   } catch (error) {
     return res.status(401).json({ message: "Invalid or expired token." });
+  }
+
+  if (!mongoose.isValidObjectId(decoded.id)) {
+    return res.status(401).json({ message: "Invalid or expired token." });
+  }
+
+  try {
+    const user = await User.findById(decoded.id).select("role isActive").lean();
+    if (!user || user.isActive === false) {
+      return res.status(401).json({ message: "This account is inactive or no longer exists." });
+    }
+
+    req.user = { ...decoded, role: user.role };
+    return next();
+  } catch (error) {
+    console.error("Authentication user lookup failed:", error);
+    return res.status(500).json({ message: "Unable to verify your account." });
   }
 };
 

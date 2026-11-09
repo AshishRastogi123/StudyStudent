@@ -48,6 +48,10 @@ test("health endpoint reports a healthy service and security headers are present
 
   const xFrameOptions = response.headers.get("x-frame-options");
   assert.equal(xFrameOptions !== null, true);
+
+  const contentSecurityPolicy = response.headers.get("content-security-policy");
+  assert.match(contentSecurityPolicy, /script-src[^;]*accounts\.google\.com\/gsi\/client/);
+  assert.match(contentSecurityPolicy, /frame-src[^;]*accounts\.google\.com\/gsi\//);
 });
 
 test("rate limiting is enabled on auth routes", async () => {

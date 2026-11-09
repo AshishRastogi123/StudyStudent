@@ -244,7 +244,13 @@ router.get("/bookmarks", requireAuth, async (req, res) => {
 
 router.get("/queue", requireAuth, requireRole("MODERATOR", "ADMIN"), async (req, res) => {
   try {
-    const notes = await Note.find({ status: "pending" }).sort({ reviewDueAt: 1 }).lean();
+    const notes = await Note.find({ status: "pending" })
+      .populate("userId", "name email")
+      .populate("uploaderId", "name email")
+      .populate("courseId", "name")
+      .populate("subjectId", "name")
+      .sort({ reviewDueAt: 1 })
+      .lean();
     return res.json({ notes });
   } catch (error) {
     return res.status(500).json({ message: "Unable to fetch moderation queue." });
@@ -482,9 +488,49 @@ router.delete("/:id", requireAuth, async (req, res) => {
 
 router.get("/all", requireAuth, requireRole("MODERATOR", "ADMIN"), async (req, res) => {
   try {
-    const notes = await Note.find({ status: { $in: validStatuses } }).sort({ createdAt: -1 });
-    return res.json({ notes });
+    const { q, status, userId, page = 1, limit = 20 } = req.query;
+    const query = { status: { $in: validStatuses } };
+
+    if (status && !validStatuses.includes(String(status))) {
+      return res.status(400).json({ message: "Note status filter is invalid." });
+    }
+    if (validStatuses.includes(status)) query.status = status;
+    if (userId) query.$or = [{ userId }, { uploaderId: userId }];
+    if (q && String(q).trim()) {
+      const searchTerm = escapeRegex(String(q).trim());
+      query.$and = [{ $or: [
+        { title: { $regex: searchTerm, $options: "i" } },
+        { description: { $regex: searchTerm, $options: "i" } },
+        { fileName: { $regex: searchTerm, $options: "i" } },
+      ] }];
+    }
+
+    const pageNumber = Math.max(1, Number(page) || 1);
+    const pageSize = Math.min(50, Math.max(1, Number(limit) || 20));
+    const [notes, total] = await Promise.all([
+      Note.find(query)
+        .populate("userId", "name email")
+        .populate("uploaderId", "name email")
+        .populate("courseId", "name slug")
+        .populate("subjectId", "name code")
+        .sort({ createdAt: -1 })
+        .skip((pageNumber - 1) * pageSize)
+        .limit(pageSize)
+        .lean(),
+      Note.countDocuments(query),
+    ]);
+
+    return res.json({
+      notes,
+      pagination: {
+        page: pageNumber,
+        limit: pageSize,
+        total,
+        pages: Math.ceil(total / pageSize),
+      },
+    });
   } catch (error) {
+    console.error("Admin note listing failed:", error);
     return res.status(500).json({ message: "Unable to fetch notes." });
   }
 });

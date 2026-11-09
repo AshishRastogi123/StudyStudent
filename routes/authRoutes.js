@@ -2,10 +2,12 @@ const crypto = require("crypto");
 const express = require("express");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const { OAuth2Client } = require("google-auth-library");
 const User = require("../models/User");
 const { requireAuth, requireRole } = require("../middleware/auth");
 
 const router = express.Router();
+const googleOAuthClient = new OAuth2Client();
 const allowedRoles = ["STUDENT", "MODERATOR", "ADMIN"];
 
 const getSessionCookieName = () => process.env.SESSION_COOKIE_NAME || "studystudent_session";
@@ -23,7 +25,7 @@ const serializeUser = (user) => ({
     avatarUrl: user.profile?.avatarUrl || "",
     phone: user.profile?.phone || "",
   },
-  isActive: user.isActive,
+  isActive: user.isActive !== false,
   createdAt: user.createdAt,
   updatedAt: user.updatedAt,
 });
@@ -93,7 +95,7 @@ router.post("/login", async (req, res) => {
 
   const normalizedEmail = String(email).trim().toLowerCase();
   const user = await User.findOne({ email: normalizedEmail });
-  if (!user) {
+  if (!user || user.isActive === false) {
     return res.status(401).json({ message: "Invalid credentials." });
   }
 
@@ -115,35 +117,66 @@ router.post("/login", async (req, res) => {
   });
 });
 
-router.post("/google", async (req, res) => {
-  const { name, email, avatarUrl } = req.body || {};
+router.get("/google/config", (req, res) => {
+  return res.json({ clientId: process.env.GOOGLE_CLIENT_ID || "" });
+});
 
-  if (!email) {
-    return res.status(400).json({ message: "Google email is required." });
+router.post("/google", async (req, res) => {
+  const { credential } = req.body || {};
+
+  if (typeof credential !== "string" || !credential.trim() || credential.length > 8192) {
+    return res.status(400).json({ message: "A valid Google credential is required." });
   }
 
-  const normalizedEmail = String(email).trim().toLowerCase();
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  if (!clientId) {
+    return res.status(503).json({ message: "Google sign-in is not configured." });
+  }
+
+  let payload;
+  try {
+    const ticket = await googleOAuthClient.verifyIdToken({
+      idToken: credential,
+      audience: clientId,
+    });
+    payload = ticket.getPayload();
+  } catch {
+    return res.status(401).json({ message: "Google credential is invalid or expired." });
+  }
+
+  if (!payload?.sub || !payload.email || payload.email_verified !== true) {
+    return res.status(401).json({ message: "Google must provide a verified email address." });
+  }
+
+  const normalizedEmail = payload.email.trim().toLowerCase();
   let user = await User.findOne({ email: normalizedEmail });
 
+  if (user?.isActive === false) {
+    return res.status(403).json({ message: "This account is disabled." });
+  }
+
   if (!user) {
+    const name = typeof payload.name === "string" && payload.name.trim()
+      ? payload.name.trim()
+      : normalizedEmail.split("@")[0];
     user = await User.create({
-      name: String(name || "Google User").trim(),
+      name,
       email: normalizedEmail,
       password: crypto.randomBytes(18).toString("hex"),
       role: "STUDENT",
       authProvider: "google",
       emailVerified: true,
       profile: {
-        avatarUrl: avatarUrl || "",
+        avatarUrl: payload.picture || "",
       },
     });
   } else {
-    user.name = String(name || user.name || "Google User").trim();
     user.authProvider = "google";
     user.emailVerified = true;
-    if (avatarUrl) user.profile = { ...user.profile.toObject?.() || user.profile, avatarUrl };
-    await user.save();
   }
+
+  user.lastLoginAt = new Date();
+  await user.save();
 
   const token = issueToken(user);
   setSessionCookie(res, token);
@@ -271,27 +304,132 @@ router.post("/verify-email", async (req, res) => {
   return res.json({ message: "Email verified successfully.", user: serializeUser(user) });
 });
 
+router.get("/users", requireAuth, requireRole("ADMIN"), async (req, res) => {
+  try {
+    const { q, role, status, page = 1, limit = 20 } = req.query;
+    const query = {};
+
+    if (role) {
+      const normalizedRole = String(role).toUpperCase();
+      if (!allowedRoles.includes(normalizedRole)) {
+        return res.status(400).json({ message: "Role filter is invalid." });
+      }
+      query.role = normalizedRole;
+    }
+
+    if (status && !["active", "inactive", "all"].includes(String(status))) {
+      return res.status(400).json({ message: "Account status filter is invalid." });
+    }
+
+    if (status === "active") query.isActive = { $ne: false };
+    if (status === "inactive") query.isActive = false;
+
+    if (q && String(q).trim()) {
+      const searchTerm = String(q).trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      query.$or = [
+        { name: { $regex: searchTerm, $options: "i" } },
+        { email: { $regex: searchTerm, $options: "i" } },
+      ];
+    }
+
+    const pageNumber = Math.max(1, Number(page) || 1);
+    const pageSize = Math.min(50, Math.max(1, Number(limit) || 20));
+    const [users, total] = await Promise.all([
+      User.find(query)
+        .select("-password -emailVerificationToken -passwordResetToken -passwordResetExpiresAt")
+        .sort({ createdAt: -1 })
+        .skip((pageNumber - 1) * pageSize)
+        .limit(pageSize)
+        .lean(),
+      User.countDocuments(query),
+    ]);
+
+    return res.json({
+      users: users.map((user) => serializeUser(user)),
+      pagination: {
+        page: pageNumber,
+        limit: pageSize,
+        total,
+        pages: Math.ceil(total / pageSize),
+      },
+    });
+  } catch (error) {
+    console.error("Admin user listing failed:", error);
+    return res.status(500).json({ message: "Unable to fetch users." });
+  }
+});
+
 router.patch("/users/:id/role", requireAuth, requireRole("ADMIN"), async (req, res) => {
-  const { id } = req.params;
-  const { role } = req.body || {};
+  try {
+    const { id } = req.params;
+    const { role } = req.body || {};
 
-  if (!allowedRoles.includes(role)) {
-    return res.status(400).json({ message: "Role must be one of STUDENT, MODERATOR, or ADMIN." });
+    if (!allowedRoles.includes(role)) {
+      return res.status(400).json({ message: "Role must be one of STUDENT, MODERATOR, or ADMIN." });
+    }
+
+    if (String(req.user.id) === String(id)) {
+      return res.status(403).json({ message: "You cannot change your own role through this endpoint." });
+    }
+
+    const user = await User.findById(id);
+    if (!user) {
+      return res.status(404).json({ message: "User not found." });
+    }
+
+    if (user.isActive !== false && user.role === "ADMIN" && role !== "ADMIN") {
+      const activeAdmins = await User.countDocuments({ role: "ADMIN", isActive: { $ne: false } });
+      if (activeAdmins <= 1) {
+        return res.status(409).json({ message: "The last active administrator cannot be demoted." });
+      }
+    }
+
+    user.role = role;
+    await user.save();
+
+    return res.json({ message: "User role updated successfully.", user: serializeUser(user) });
+  } catch (error) {
+    console.error("Admin role update failed:", error);
+    return res.status(500).json({ message: "Unable to update user role." });
   }
+});
 
-  if (String(req.user.id) === String(id)) {
-    return res.status(403).json({ message: "You cannot change your own role through this endpoint." });
+router.patch("/users/:id/status", requireAuth, requireRole("ADMIN"), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { isActive } = req.body || {};
+
+    if (typeof isActive !== "boolean") {
+      return res.status(400).json({ message: "isActive must be a boolean." });
+    }
+
+    if (String(req.user.id) === String(id)) {
+      return res.status(403).json({ message: "You cannot deactivate your own account." });
+    }
+
+    const user = await User.findById(id);
+    if (!user) {
+      return res.status(404).json({ message: "User not found." });
+    }
+
+    if (!isActive && user.isActive !== false && user.role === "ADMIN") {
+      const activeAdmins = await User.countDocuments({ role: "ADMIN", isActive: { $ne: false } });
+      if (activeAdmins <= 1) {
+        return res.status(409).json({ message: "The last active administrator cannot be deactivated." });
+      }
+    }
+
+    user.isActive = isActive;
+    await user.save();
+
+    return res.json({
+      message: `User ${isActive ? "activated" : "deactivated"} successfully.`,
+      user: serializeUser(user),
+    });
+  } catch (error) {
+    console.error("Admin user status update failed:", error);
+    return res.status(500).json({ message: "Unable to update user status." });
   }
-
-  const user = await User.findById(id);
-  if (!user) {
-    return res.status(404).json({ message: "User not found." });
-  }
-
-  user.role = role;
-  await user.save();
-
-  return res.json({ message: "User role updated successfully.", user: serializeUser(user) });
 });
 
 module.exports = router;
