@@ -10,17 +10,23 @@
     "test": "node --test test/**/*.test.js",
     "migrate:core": "node migrations/001_init_core_schema.js",
     "migrate:academic": "node migrations/002_init_academic_hierarchy.js",
+    "migrate:discovery": "node migrations/003_init_note_discovery.js",
+    "migrate:notifications": "node migrations/004_init_notifications.js",
     "validate:env": "node -e \"require('./config/env').validateAppConfig(); console.log('Environment validation passed');\""
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.119.0",
     "bcryptjs": "^2.4.3",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
+    "express-rate-limit": "^8.7.3",
+    "helmet": "^8.3.0",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.8.1",
-    "morgan": "^1.10.1"
+    "morgan": "^1.10.1",
+    "multer": "^2.5.0"
   },
   "engines": {
     "node": ">=18"

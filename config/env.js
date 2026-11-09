@@ -40,6 +40,11 @@ function validateAppConfig() {
     throw new Error(`Missing required environment variables: ${missing.join(", ")}. Copy .env.example to .env and complete the values.`);
   }
 
+  const allowedOrigins = (process.env.ALLOWED_ORIGINS || process.env.FRONTEND_URL || "http://localhost:3000")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+
   return {
     port: Number(process.env.PORT || 3000),
     mongoUri: process.env.MONGO_URI,
@@ -47,6 +52,7 @@ function validateAppConfig() {
     sessionCookieName: process.env.SESSION_COOKIE_NAME,
     nodeEnv: process.env.NODE_ENV || "development",
     frontendUrl: process.env.FRONTEND_URL || "http://localhost:3000",
+    allowedOrigins,
     googleClientId: process.env.GOOGLE_CLIENT_ID || "",
     googleClientSecret: process.env.GOOGLE_CLIENT_SECRET || "",
   };
