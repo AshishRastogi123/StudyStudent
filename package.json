@@ -1,0 +1,31 @@
+{
+  "name": "studystudent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "StudyStudent backend foundation with MongoDB authentication and security guardrails.",
+  "main": "server.js",
+  "scripts": {
+    "dev": "node --watch server.js",
+    "start": "node server.js",
+    "test": "node --test test/**/*.test.js",
+    "migrate:core": "node migrations/001_init_core_schema.js",
+    "migrate:academic": "node migrations/002_init_academic_hierarchy.js",
+    "validate:env": "node -e \"require('./config/env').validateAppConfig(); console.log('Environment validation passed');\""
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.8.1",
+    "morgan": "^1.10.1"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "mongodb-memory-server": "^11.3.0"
+  }
+}
